@@ -1,7 +1,10 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-import winsound
+import pygame
+
+pygame.mixer.init()
+alarm_sound = pygame.mixer.Sound("alarm.wav")
 
 # -----------------------------
 # LANDMARKS
@@ -11,69 +14,16 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 MOUTH = [61, 291, 0, 17, 13, 14]
 
 # -----------------------------
-# MEDIA PIPE SETUP
+# MEDIAPIPE SETUP
 # -----------------------------
 mp_face_mesh = mp.solutions.face_mesh
+
 face_mesh = mp_face_mesh.FaceMesh(
     max_num_faces=1,
     refine_landmarks=True,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
-
-mp_draw = mp.solutions.drawing_utils
-
-# Clean HUD-style drawing (only contours)
-def draw_face_landmarks(frame, face_landmarks):
-    # Soft HUD colors
-    face_color = (120, 255, 180)   # soft mint
-    eye_color = (255, 255, 255)    # white highlight
-    mouth_color = (180, 200, 255)  # soft blue
-
-    # Base mesh (very subtle)
-    mp_draw.draw_landmarks(
-        image=frame,
-        landmark_list=face_landmarks,
-        connections=mp.solutions.face_mesh.FACEMESH_CONTOURS,
-        landmark_drawing_spec=None,
-        connection_drawing_spec=mp_draw.DrawingSpec(
-            color=(80, 80, 80), thickness=1, circle_radius=0
-        )
-    )
-
-    # Eyes (highlight stronger)
-    mp_draw.draw_landmarks(
-        image=frame,
-        landmark_list=face_landmarks,
-        connections=mp.solutions.face_mesh.FACEMESH_LEFT_EYE,
-        landmark_drawing_spec=None,
-        connection_drawing_spec=mp_draw.DrawingSpec(
-            color=eye_color, thickness=2, circle_radius=1
-        )
-    )
-
-    mp_draw.draw_landmarks(
-        image=frame,
-        landmark_list=face_landmarks,
-        connections=mp.solutions.face_mesh.FACEMESH_RIGHT_EYE,
-        landmark_drawing_spec=None,
-        connection_drawing_spec=mp_draw.DrawingSpec(
-            color=eye_color, thickness=2, circle_radius=1
-        )
-    )
-
-    # Mouth (medium emphasis)
-    mp_draw.draw_landmarks(
-        image=frame,
-        landmark_list=face_landmarks,
-        connections=mp.solutions.face_mesh.FACEMESH_LIPS,
-        landmark_drawing_spec=None,
-        connection_drawing_spec=mp_draw.DrawingSpec(
-            color=mouth_color, thickness=2, circle_radius=1
-        )
-    )
-
-    return frame
 
 # -----------------------------
 # EAR FUNCTION
@@ -83,8 +33,10 @@ def eye_aspect_ratio(landmarks, eye_points, w, h):
 
     for i in eye_points:
         lm = landmarks[i]
-        x, y = int(lm.x * w), int(lm.y * h)
-        points.append([x, y])
+        points.append([
+            int(lm.x * w),
+            int(lm.y * h)
+        ])
 
     A = np.linalg.norm(np.array(points[1]) - np.array(points[5]))
     B = np.linalg.norm(np.array(points[2]) - np.array(points[4]))
@@ -100,8 +52,11 @@ def mouth_aspect_ratio(landmarks, mouth_points, w, h):
 
     for i in mouth_points:
         lm = landmarks[i]
-        x, y = int(lm.x * w), int(lm.y * h)
-        points.append([x, y])
+
+        points.append([
+            int(lm.x * w),
+            int(lm.y * h)
+        ])
 
     A = np.linalg.norm(np.array(points[2]) - np.array(points[3]))
     B = np.linalg.norm(np.array(points[0]) - np.array(points[1]))
@@ -109,68 +64,122 @@ def mouth_aspect_ratio(landmarks, mouth_points, w, h):
     return A / B
 
 # -----------------------------
-# DASHBOARD UI
+# FACE BOX
 # -----------------------------
-def draw_dashboard(frame, ear, mar, closed_frames, yawn_frames):
-    h, w, _ = frame.shape
+def draw_face_box(frame, landmarks, w, h, color):
+    xs = []
+    ys = []
 
-    text = (245, 245, 245)
-    muted = (180, 180, 180)
-    alert = (0, 0, 255)
-    ok = (0, 255, 120)
+    for lm in landmarks:
+        xs.append(int(lm.x * w))
+        ys.append(int(lm.y * h))
 
-    drowsy = closed_frames > 60
+    x_min = min(xs)
+    y_min = min(ys)
+    x_max = max(xs)
+    y_max = max(ys)
 
-    status = "ACTIVE"
-    color = ok
+    padding = 20
+
+    cv2.rectangle(
+        frame,
+        (x_min - padding, y_min - padding),
+        (x_max + padding, y_max + padding),
+        color,
+        2
+    )
+
+# -----------------------------
+# LANDMARK DRAWING
+# -----------------------------
+def draw_landmarks(frame, landmarks, w, h):
+    for lm in landmarks:
+        x = int(lm.x * w)
+        y = int(lm.y * h)
+
+        cv2.circle(
+            frame,
+            (x, y),
+            1,
+            (255, 255, 255),
+            -1
+        )
+
+# -----------------------------
+# STATUS PANEL
+# -----------------------------
+def draw_status_panel(frame, ear, mar, drowsy, yawning):
+
+    overlay = frame.copy()
+
+    cv2.rectangle(
+        overlay,
+        (15, 15),
+        (260, 130),
+        (30, 30, 30),
+        -1
+    )
+
+    cv2.addWeighted(
+        overlay,
+        0.6,
+        frame,
+        0.4,
+        0,
+        frame
+    )
 
     if drowsy:
         status = "DROWSY"
-        color = alert
+        color = (0, 0, 255)
 
-    x, y = 25, 40
+    elif yawning:
+        status = "YAWNING"
+        color = (0, 165, 255)
 
-    cv2.putText(frame, "DRIVER MONITOR", (x, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, text, 2)
+    else:
+        status = "ACTIVE"
+        color = (0, 255, 0)
 
-    cv2.putText(frame, f"STATUS: {status}", (x, y + 35),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+    cv2.putText(
+        frame,
+        "DRIVER MONITOR",
+        (25, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 255, 255),
+        2
+    )
 
-    cv2.putText(frame, f"EAR: {ear:.2f}", (x, y + 65),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, muted, 2)
+    cv2.putText(
+        frame,
+        f"STATUS: {status}",
+        (25, 70),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        color,
+        2
+    )
 
-    cv2.putText(frame, f"MAR: {mar:.2f}", (x, y + 90),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, muted, 2)
+    cv2.putText(
+        frame,
+        f"EAR: {ear:.2f}",
+        (25, 100),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        2
+    )
 
-    cv2.putText(frame, f"YAWN: {'YES' if yawn_frames > 15 else 'NO'}", (x, y + 115),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, muted, 2)
-
-    # progress bar
-    bar_x, bar_y = x, y + 135
-    bar_w, bar_h = 220, 6
-
-    fill = int(max(0, min(1, (0.3 - ear) / 0.15)) * bar_w)
-
-    cv2.rectangle(frame, (bar_x, bar_y),
-                  (bar_x + bar_w, bar_y + bar_h), (50, 50, 50), -1)
-
-    cv2.rectangle(frame, (bar_x, bar_y),
-                  (bar_x + fill, bar_y + bar_h), color, -1)
-
-    # gauge
-    center = (w - 110, 110)
-    radius = 50
-
-    cv2.circle(frame, center, radius, (80, 80, 80), 2)
-
-    angle = int(min(max((1 - ear) * 300, 0), 270))
-    cv2.ellipse(frame, center, (radius, radius),
-                0, 135, 135 + angle, color, 2)
-
-    cv2.putText(frame, f"{int((1 - ear) * 100)}%", (center[0] - 25, center[1] + 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, text, 2)
-
-    return frame
+    cv2.putText(
+        frame,
+        f"MAR: {mar:.2f}",
+        (140, 100),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        2
+    )
 
 # -----------------------------
 # CAMERA
@@ -187,89 +196,215 @@ alarm_cooldown = 0
 # MAIN LOOP
 # -----------------------------
 while True:
-    ret, frame = cap.read()
-    if not ret:
+
+    success, frame = cap.read()
+
+    if not success:
         break
 
     frame = cv2.flip(frame, 1)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    rgb = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2RGB
+    )
 
     results = face_mesh.process(rgb)
+
     h, w, _ = frame.shape
 
     ear = 0
     mar = 0
 
+    drowsy = False
+    yawning = False
+
     if results.multi_face_landmarks:
-        for face_landmarks in results.multi_face_landmarks:
 
-            # 🔥 FACE LANDMARK UI (NEW)
-            frame = draw_face_landmarks(frame, face_landmarks)
+        face_landmarks = results.multi_face_landmarks[0]
 
-            # EAR
-            left_ear = eye_aspect_ratio(face_landmarks.landmark, LEFT_EYE, w, h)
-            right_ear = eye_aspect_ratio(face_landmarks.landmark, RIGHT_EYE, w, h)
-            ear = (left_ear + right_ear) / 2.0
+        # EAR
+        left_ear = eye_aspect_ratio(
+            face_landmarks.landmark,
+            LEFT_EYE,
+            w,
+            h
+        )
 
-            # MAR
-            mar = mouth_aspect_ratio(face_landmarks.landmark, MOUTH, w, h)
+        right_ear = eye_aspect_ratio(
+            face_landmarks.landmark,
+            RIGHT_EYE,
+            w,
+            h
+        )
 
-            # EAR logic
-            if ear < 0.22:
-                closed_frames += 1
-            else:
-                closed_frames = 0
-                alarm_on = False
+        ear = (left_ear + right_ear) / 2
 
-            # YAWN logic
-            if mar > 0.6:
-                yawn_frames += 1
-            else:
-                yawn_frames = 0
+        # MAR
+        mar = mouth_aspect_ratio(
+            face_landmarks.landmark,
+            MOUTH,
+            w,
+            h
+        )
+
+        # Drowsiness logic
+        if ear < 0.22:
+            closed_frames += 1
+        else:
+            closed_frames = 0
+            alarm_on = False
+
+        # Yawning logic
+        if mar > 0.60:
+            yawn_frames += 1
+        else:
+            yawn_frames = 0
+
+        drowsy = closed_frames > 60
+        yawning = yawn_frames > 15
+
+        # Box color
+        if drowsy:
+            box_color = (0, 0, 255)
+
+        elif yawning:
+            box_color = (0, 165, 255)
+
+        else:
+            box_color = (0, 255, 0)
+
+        # Draw UI
+        draw_face_box(
+            frame,
+            face_landmarks.landmark,
+            w,
+            h,
+            box_color
+        )
+
+        draw_landmarks(
+            frame,
+            face_landmarks.landmark,
+            w,
+            h
+        )
+
+        draw_status_panel(
+            frame,
+            ear,
+            mar,
+            drowsy,
+            yawning
+        )
 
     # -----------------------------
-    # DROWSY STATE
-    # -----------------------------
-    drowsy = closed_frames > 60
-
-    # -----------------------------
-    # SMART ALARM (NO SPAM)
+    # ALARM
     # -----------------------------
     if alarm_cooldown > 0:
         alarm_cooldown -= 1
 
-    if drowsy and not alarm_on and alarm_cooldown == 0:
-        # strong wake-up pattern
-        for _ in range(3):
-            winsound.Beep(2200, 120)
-            winsound.Beep(2800, 120)
+    if drowsy and not alarm_on:
 
+        # 2-5 seconds eyes closed
+        if closed_frames < 150:
+            alarm_sound.set_volume(0.4)
+
+        # 5-10 seconds eyes closed
+        elif closed_frames < 300:
+            alarm_sound.set_volume(0.7)
+
+        # More than 10 seconds eyes closed
+        else:
+            alarm_sound.set_volume(1.0)
+
+        alarm_sound.play(-1)  # loop continuously
         alarm_on = True
-        alarm_cooldown = 120
 
-    if not drowsy:
+    if drowsy:
+
+        # Start alarm if not already playing
+        if not alarm_on:
+            alarm_sound.play(-1)  # loop forever
+            alarm_on = True
+
+        # Increase volume as eyes remain closed longer
+
+        if closed_frames < 150:  # ~2-5 sec
+            alarm_sound.set_volume(0.3)
+
+        elif closed_frames < 300:  # ~5-10 sec
+            alarm_sound.set_volume(0.6)
+
+        elif closed_frames < 450:  # ~10-15 sec
+            alarm_sound.set_volume(0.8)
+
+        else:  # >15 sec
+            alarm_sound.set_volume(1.0)
+
+    else:
+        alarm_sound.stop()
         alarm_on = False
-        alarm_cooldown = 0
 
     # -----------------------------
     # WARNINGS
     # -----------------------------
-    if drowsy:
-        cv2.putText(frame, "DROWSINESS DETECTED!", (30, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    if closed_frames > 300:
 
-    if yawn_frames > 15:
-        cv2.putText(frame, "YAWNING DETECTED", (30, 150),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+        cv2.putText(
+            frame,
+            "WAKE UP NOW!",
+            (25, h - 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.2,
+            (0, 0, 255),
+            4
+        )
 
-    # -----------------------------
-    # UI
-    # -----------------------------
-    frame = draw_dashboard(frame, ear, mar, closed_frames, yawn_frames)
+    elif closed_frames > 150:
 
-    cv2.imshow("Driver Drowsiness Detection System", frame)
+        cv2.putText(
+            frame,
+            "SEVERE DROWSINESS!",
+            (25, h - 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 165, 255),
+            3
+        )
 
-    if cv2.waitKey(1) & 0xFF == 27:
+    elif drowsy:
+
+        cv2.putText(
+            frame,
+            "DROWSINESS DETECTED!",
+            (25, h - 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            (0, 0, 255),
+            3
+        )
+
+    elif yawning:
+
+        cv2.putText(
+            frame,
+            "YAWNING DETECTED",
+            (25, h - 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 165, 255),
+            3
+        )
+
+    cv2.imshow(
+        "Driver Drowsiness Detection System",
+        frame
+    )
+
+    key = cv2.waitKey(1)
+
+    if key == 27:
         break
 
 cap.release()
